@@ -180,6 +180,28 @@ func TestInstrumentationStaysQuietOnCleanTransactions(t *testing.T) {
 	require.Empty(t, snap.RecentEvents, "clean work must not fill the event ring")
 }
 
+func TestInstrumentationCapturesCallChain(t *testing.T) {
+	db := newTestDB(t, &fakeDriver{}, time.Hour)
+	defer db.Close()
+
+	tx := openFromHelper(t, db)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	stack := InstrumentationSnapshot().OpenTransactions[0].Stack
+	require.GreaterOrEqual(t, len(stack), 2, "the chain must keep the frames above the immediate caller: %v", stack)
+	require.Contains(t, stack[0], "openFromHelper")
+	require.Contains(t, stack[1], "TestInstrumentationCapturesCallChain")
+}
+
+// openFromHelper stands in for the ORM: it opens the transaction one level below
+// the code that actually triggered the write.
+func openFromHelper(t *testing.T, db *sql.DB) *sql.Tx {
+	t.Helper()
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	return tx
+}
+
 func TestInstrumentationSnapshotExposesOpenTransactionCaller(t *testing.T) {
 	db := newTestDB(t, &fakeDriver{}, time.Hour)
 	defer db.Close()
