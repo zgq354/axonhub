@@ -92,6 +92,10 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	{
 		// System Status and Initialize - DO NOT AUTH
 		unSecureAdminGroup.GET("/system/status", handlers.System.GetSystemStatus)
+		// Database transaction/statement timings for write-lock incidents. Same
+		// trust level as /health and /system/status: it exposes timings, caller
+		// names and truncated SQL text, never row data.
+		unSecureAdminGroup.GET("/system/db-instrumentation", handlers.System.GetDBInstrumentation)
 		unSecureAdminGroup.POST("/system/initialize", handlers.System.InitializeSystem)
 		// User Login - DO NOT AUTH
 		unSecureAdminGroup.POST("/auth/signin", handlers.Auth.SignIn)

@@ -17,6 +17,7 @@ import (
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/server/assets"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/db"
 )
 
 type SystemHandlersParams struct {
@@ -85,6 +86,14 @@ func (h *SystemHandlers) GetSystemStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, SystemStatusResponse{
 		IsInitialized: isInitialized,
 	})
+}
+
+// GetDBInstrumentation reports the database transaction and statement timings.
+// A SQLite write lock held by a connection whose caller is gone cannot be seen
+// in a goroutine dump, so this is the read-out for that state. See
+// internal/server/db/instrumentation.go for what is counted.
+func (h *SystemHandlers) GetDBInstrumentation(c *gin.Context) {
+	c.JSON(http.StatusOK, db.InstrumentationSnapshot())
 }
 
 // Health returns the application health status and build information.

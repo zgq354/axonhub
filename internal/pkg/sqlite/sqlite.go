@@ -34,6 +34,13 @@ func (d sqliteDriver) Open(name string) (driver.Conn, error) {
 	return conn, nil
 }
 
+// NewDriver returns the driver that is registered as "sqlite3". Other packages
+// wrap it (see the transaction instrumentation in internal/server/db), so the
+// instance has to be obtainable rather than only registered by name.
+func NewDriver() driver.Driver {
+	return sqliteDriver{Driver: &sqlite.Driver{}}
+}
+
 func init() {
-	sql.Register("sqlite3", sqliteDriver{Driver: &sqlite.Driver{}})
+	sql.Register("sqlite3", NewDriver())
 }

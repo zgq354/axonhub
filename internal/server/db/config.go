@@ -13,6 +13,15 @@ type Config struct {
 	DisableSQLiteAutoWAL bool          `conf:"disable_sqlite_auto_wal" yaml:"disable_sqlite_auto_wal" json:"disable_sqlite_auto_wal"`
 	DisableAutoMigration bool          `conf:"disable_auto_migration" yaml:"disable_auto_migration" json:"disable_auto_migration"`
 
+	// TxWatch instruments the driver layer and reports transactions that stay
+	// open, fail to commit, or take longer than TxWatchThreshold. It is
+	// observation only; see instrumentation.go for why the holder of a SQLite
+	// write lock is otherwise invisible.
+	TxWatchEnabled   bool          `conf:"tx_watch_enabled" yaml:"tx_watch_enabled" json:"tx_watch_enabled"`
+	TxWatchThreshold time.Duration `conf:"tx_watch_threshold" yaml:"tx_watch_threshold" json:"tx_watch_threshold"`
+	TxWatchInterval  time.Duration `conf:"tx_watch_interval" yaml:"tx_watch_interval" json:"tx_watch_interval"`
+	TxWatchHistory   int           `conf:"tx_watch_history" yaml:"tx_watch_history" json:"tx_watch_history"`
+
 	ReadReplica ReadReplicaConfig `conf:"read_replica" yaml:"read_replica" json:"read_replica"`
 }
 

@@ -269,6 +269,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("db.read_replica.read_dsn", "")
 	v.SetDefault("db.read_replica.read_max_open_conns", 0)
 	v.SetDefault("db.read_replica.read_max_idle_conns", 0)
+	v.SetDefault("db.tx_watch_enabled", true)
+	v.SetDefault("db.tx_watch_threshold", "1s")
+	v.SetDefault("db.tx_watch_interval", "10s")
+	v.SetDefault("db.tx_watch_history", 20)
 
 	// Log defaults
 	v.SetDefault("log.name", "axonhub")
