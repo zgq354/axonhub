@@ -727,18 +727,35 @@ func namedValues(args []driver.NamedValue) []driver.Value {
 // this file to name the code that opened the transaction. Only the wrapper
 // itself is skipped: a helper elsewhere in this package is a legitimate caller.
 func callsite() string {
-	pcs := make([]uintptr, 24)
+	pcs := make([]uintptr, 32)
 	n := runtime.Callers(1, pcs)
 	frames := runtime.CallersFrames(pcs[:n])
+
+	// The immediate caller is usually the ORM or a driver helper; the answer to
+	// "which code path holds the lock" is the first frame that belongs to this
+	// repository, so dependency frames are only used as a fallback.
+	var fallback string
 	for {
 		frame, more := frames.Next()
 		if !isWrapperFrame(frame.Function) {
-			return truncate(fmt.Sprintf("%s:%d %s", frame.File, frame.Line, shortFunc(frame.Function)), txWatchMaxCallsiteLen)
+			loc := truncate(fmt.Sprintf("%s:%d %s", frame.File, frame.Line, shortFunc(frame.Function)), txWatchMaxCallsiteLen)
+			if !isDependencyFrame(frame.File) {
+				return loc
+			}
+			if fallback == "" {
+				fallback = loc
+			}
 		}
 		if !more {
-			return ""
+			return fallback
 		}
 	}
+}
+
+// isDependencyFrame reports whether a frame comes from the module cache or a
+// vendor directory rather than from this repository.
+func isDependencyFrame(file string) bool {
+	return strings.Contains(file, "/pkg/mod/") || strings.Contains(file, "/vendor/")
 }
 
 func isWrapperFrame(fn string) bool {
