@@ -43,6 +43,7 @@ const (
 	txWatchMaxStatements    = 3
 	txWatchMaxStatementLen  = 160
 	txWatchMaxCallsiteLen   = 160
+	txWatchMaxStack         = 4
 
 	instrumentedSQLiteDriverName = "axonhub-sqlite3"
 	instrumentedPGXDriverName    = "axonhub-pgx"
@@ -57,6 +58,7 @@ type TxEvent struct {
 	Callsite   string    `json:"callsite,omitempty"`
 	Statement  string    `json:"statement,omitempty"`
 	Statements []string  `json:"statements,omitempty"`
+	Stack      []string  `json:"stack,omitempty"`
 	DurationMS int64     `json:"duration_ms"`
 	AgeMS      int64     `json:"age_ms,omitempty"`
 	At         time.Time `json:"at"`
@@ -91,6 +93,7 @@ type watchedTx struct {
 	id       int64
 	dialect  string
 	callsite string
+	stack    []string
 	started  time.Time
 
 	mu     sync.Mutex
@@ -124,6 +127,7 @@ func (t *watchedTx) event(kind, err string) TxEvent {
 		Callsite:   t.callsite,
 		Statement:  first(t.stmts),
 		Statements: append([]string(nil), t.stmts...),
+		Stack:      append([]string(nil), t.stack...),
 		DurationMS: time.Since(t.started).Milliseconds(),
 		At:         t.started,
 		Error:      err,
@@ -140,6 +144,7 @@ func (t *watchedTx) ageEvent(kind string) TxEvent {
 		Callsite:   t.callsite,
 		Statement:  first(t.stmts),
 		Statements: append([]string(nil), t.stmts...),
+		Stack:      append([]string(nil), t.stack...),
 		DurationMS: time.Since(t.started).Milliseconds(),
 		AgeMS:      time.Since(t.started).Milliseconds(),
 		At:         t.started,
@@ -213,11 +218,12 @@ func (w *txWatcher) record(ev TxEvent) {
 	}
 }
 
-func (w *txWatcher) begin(dialect, callsite string) *watchedTx {
+func (w *txWatcher) begin(dialect string, stack []string) *watchedTx {
 	tx := &watchedTx{
 		id:       w.seq.Add(1),
 		dialect:  dialect,
-		callsite: callsite,
+		callsite: first(stack),
+		stack:    stack,
 		started:  time.Now(),
 	}
 	w.begun.Add(1)
@@ -255,6 +261,7 @@ func (w *txWatcher) complete(tx *watchedTx) {
 			log.String("dialect", ev.Dialect),
 			log.Duration("duration", duration),
 			log.String("callsite", ev.Callsite),
+			log.Any("stack", ev.Stack),
 			log.String("statement", ev.Statement),
 			log.Any("statements", ev.Statements),
 		)
@@ -291,6 +298,7 @@ func (w *txWatcher) notePoolReturn(tx *watchedTx, source string) {
 		log.String("dialect", ev.Dialect),
 		log.Duration("age", time.Duration(ev.AgeMS)*time.Millisecond),
 		log.String("callsite", ev.Callsite),
+		log.Any("stack", ev.Stack),
 		log.String("statement", ev.Statement),
 		log.Any("statements", ev.Statements),
 		log.String("suspect", suspect),
@@ -330,6 +338,7 @@ func (w *txWatcher) runWatchdog() {
 					log.String("dialect", ev.Dialect),
 					log.Duration("age", time.Since(tx.started)),
 					log.String("callsite", ev.Callsite),
+					log.Any("stack", ev.Stack),
 					log.String("statement", ev.Statement),
 					log.Any("statements", ev.Statements),
 					log.String("suspect", ev.Error),
@@ -541,7 +550,7 @@ func (c *instrumentedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (
 		return nil, err
 	}
 
-	tx := txw.begin(c.dialect, callsite())
+	tx := txw.begin(c.dialect, callsites())
 	c.trackTx(tx)
 
 	return &instrumentedTx{Tx: inner, conn: c, watched: tx}, nil
@@ -597,10 +606,12 @@ func (c *instrumentedConn) noteSlowStatement(query string, elapsed time.Duration
 		return
 	}
 	txw.slowStmt.Add(1)
+	stack := callsites()
 	ev := TxEvent{
 		Kind:       "slow_statement",
 		Dialect:    c.dialect,
-		Callsite:   callsite(),
+		Callsite:   first(stack),
+		Stack:      stack,
 		Statement:  truncate(query, txWatchMaxStatementLen),
 		DurationMS: elapsed.Milliseconds(),
 		At:         time.Now().Add(-elapsed),
@@ -612,6 +623,7 @@ func (c *instrumentedConn) noteSlowStatement(query string, elapsed time.Duration
 		log.String("dialect", ev.Dialect),
 		log.Duration("duration", elapsed),
 		log.String("callsite", ev.Callsite),
+		log.Any("stack", ev.Stack),
 		log.String("statement", ev.Statement),
 		log.Cause(err),
 	)
@@ -640,6 +652,7 @@ func (t *instrumentedTx) Commit() error {
 			log.String("dialect", ev.Dialect),
 			log.Duration("duration", time.Since(t.watched.started)),
 			log.String("callsite", ev.Callsite),
+			log.Any("stack", ev.Stack),
 			log.String("statement", ev.Statement),
 			log.Any("statements", ev.Statements),
 			log.Cause(err),
@@ -668,6 +681,7 @@ func (t *instrumentedTx) Rollback() error {
 		log.Error(context.Background(), "database transaction rollback failed",
 			log.String("dialect", ev.Dialect),
 			log.String("callsite", ev.Callsite),
+			log.Any("stack", ev.Stack),
 			log.String("statement", ev.Statement),
 			log.Cause(err),
 		)
@@ -726,30 +740,41 @@ func namedValues(args []driver.NamedValue) []driver.Value {
 // callsite walks the stack past database/sql and past the wrapper frames of
 // this file to name the code that opened the transaction. Only the wrapper
 // itself is skipped: a helper elsewhere in this package is a legitimate caller.
-func callsite() string {
+// callsites returns the call chain that led here, innermost first, skipping the
+// wrapper frames of this file(). The immediate caller is normally the ORM or a
+// driver helper, which names the operation but not the code path that holds the
+// lock; frames from this repository are therefore collected first and
+// dependency frames are only used when nothing else is available.
+func callsites() []string {
 	pcs := make([]uintptr, 32)
 	n := runtime.Callers(1, pcs)
 	frames := runtime.CallersFrames(pcs[:n])
 
-	// The immediate caller is usually the ORM or a driver helper; the answer to
-	// "which code path holds the lock" is the first frame that belongs to this
-	// repository, so dependency frames are only used as a fallback.
-	var fallback string
+	var (
+		repo []string
+		dep  []string
+	)
 	for {
 		frame, more := frames.Next()
 		if !isWrapperFrame(frame.Function) {
 			loc := truncate(fmt.Sprintf("%s:%d %s", frame.File, frame.Line, shortFunc(frame.Function)), txWatchMaxCallsiteLen)
-			if !isDependencyFrame(frame.File) {
-				return loc
-			}
-			if fallback == "" {
-				fallback = loc
+			if isDependencyFrame(frame.File) {
+				if len(dep) < txWatchMaxStack {
+					dep = append(dep, loc)
+				}
+			} else if len(repo) < txWatchMaxStack {
+				repo = append(repo, loc)
 			}
 		}
 		if !more {
-			return fallback
+			break
 		}
 	}
+
+	if len(repo) > 0 {
+		return repo
+	}
+	return dep
 }
 
 // isDependencyFrame reports whether a frame comes from the module cache or a
@@ -768,7 +793,7 @@ func isWrapperFrame(fn string) bool {
 	}
 	rest := strings.TrimPrefix(fn, pkg)
 	for _, prefix := range []string{
-		"callsite", "isWrapperFrame", "prepare", "execWithoutContext", "queryWithoutContext",
+		"callsite", "callsites", "isWrapperFrame", "prepare", "execWithoutContext", "queryWithoutContext",
 		"registerInstrumentedDrivers", "(*instrumentedConn)", "(*instrumentedTx)",
 		"(*instrumentedDriver)", "(*instrumentedConnector)",
 	} {
