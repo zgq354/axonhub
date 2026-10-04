@@ -29,6 +29,8 @@ const defaultSQLiteBusyTimeoutMs = 5000
 // SELECT/WITH queries are automatically routed to the replica; all writes go to master.
 // Transactions always run on master. If read_dsn is empty, all queries go to master.
 func NewEntClient(cfg Config) *ent.Client {
+	txw.configure(cfg)
+
 	var opts []ent.Option
 	if cfg.Debug {
 		opts = append(opts, ent.Debug())
@@ -144,13 +146,17 @@ func openDB(dialectName, dsn string, maxOpen, maxIdle int, maxLifetime, maxIdleT
 }
 
 func driverName(dialectName string) (string, error) {
+	// Every connection goes through the instrumented driver so that transaction
+	// and statement timings are available regardless of dialect.
+	registerInstrumentedDrivers()
+
 	switch dialectName {
 	case "postgres", "pgx", "postgresdb", "pg", "postgresql":
-		return "pgx", nil
+		return instrumentedPGXDriverName, nil
 	case "sqlite3", "sqlite":
-		return "sqlite3", nil
+		return instrumentedSQLiteDriverName, nil
 	case "mysql", "tidb":
-		return "mysql", nil
+		return instrumentedMySQLDriverName, nil
 	default:
 		return "", fmt.Errorf("invalid dialect: %s", dialectName)
 	}
